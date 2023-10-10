@@ -5,55 +5,17 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 # hyperparameters
-batch_size:int = 8 # no of independent sequences to be processed in parallel
-block_size:int = 16 # maximum context length for predictions
-max_iters:int = 4000
+batch_size:int = 16 
+block_size:int = 32 
+max_iters:int = 5000
 eval_interval:int = 100
 learning_rate:int = 1e-3
 device:str = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters:int = 100
-n_embd:int = 32
-n_head:int = 2
-n_layer:int = 2
+eval_iters:int = 200
+n_embd:int = 64
+n_head:int = 4
+n_layer:int = 4
 dropout:int = 0.0
-
-class Bigram(nn.Module):
-    def __init__(self, vocab_size):
-        super().__init__()
-        self.token_embd_table = nn.Embedding(vocab_size, vocab_size)
-        self.position_embd_table = nn.Embedding(block_size, vocab_size)
-        self.blocks = nn.Sequential(
-            *[Block(n_embd, n_head=n_head) for _ in range(n_layer)]
-        )
-        self.layernormf = nn.LayerNorm(n_embd)
-        self.lm_head = nn.Linear(n_embd, vocab_size)
-
-    def forward(self, idx, targets=None) -> torch.Tensor:
-        b, t = idx.shape
-        token_embd = self.token_embd_table(idx)
-        pos_embd = self.position_embd_table(torch.arange(t, device=device))
-        x = token_embd + pos_embd
-        x = self.blocks(x)
-        x = self.layernormf(x)
-        logits = self.lm_head(x)
-        if targets is None:
-            loss = None
-        else: 
-            b, t, c = logits.shape
-            logits = logits.view(b*t, c)
-            targets = targets.view(b*t)
-            criterion = nn.CrossEntropyLoss()
-            loss = criterion(logits, targets)
-        return logits, loss
-
-    def generate(self, idx, max_new_tokens):
-        for _ in range(max_new_tokens):
-            logits, loss = self(idx)
-            logits = logits[:, -1, :]        
-            probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinomial(probs, num_samples=1) 
-            idx = torch.cat((idx, idx_next), dim=1) 
-        return idx
 
 class SingleHeadAttention(nn.Module):
     def __init__(self, head_size:int):
@@ -62,20 +24,20 @@ class SingleHeadAttention(nn.Module):
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer = ('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x:torch.Tensor) -> torch.Tensor:
-        b, t, c = x.shape
-        k = self.key(x)
-        q = self.query(x)
-        w = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5
-        w = w.masked_fill(self.tril[:t, :t] == 0, float('-inf'))
-        w = F.softmax(w, dim=-1)
+    def forward(self, x):
+        B,T,C = x.shape
+        k = self.key(x)   
+        q = self.query(x) 
+        w = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 
+        w = w.masked_fill(self.tril[:T, :T] == 0, float('-inf')) 
+        w = F.softmax(w, dim=-1) 
         w = self.dropout(w)
-        v = self.value(x)
-        out = w @ v
-        return out 
+        v = self.value(x) 
+        out = w @ v 
+        return out
     
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads:int, head_size:int):
@@ -107,7 +69,7 @@ class FeedForward(nn.Module):
                 init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             init.normal_(module.weight, mean=0.0, std=0.02)
-
+       
     def forward(self, x:torch.Tensor) -> torch.Tensor:
         return self.network(x)
     
@@ -116,16 +78,15 @@ class Block(nn.Module):
         super().__init__()  
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.linear = FeedForward(n_embd)
+        self.ffwd = FeedForward(n_embd)
         self.layernorm1 = nn.LayerNorm(n_embd)
         self.layernorm2 = nn.LayerNorm(n_embd)
 
-    def forward(self, x:torch.Tensor) -> torch.Tensor:
-        x_res = x                               # store input for residual connection
+    def forward(self, x:torch.Tensor) -> torch.Tensor:  
+        xres = x                           # store input for residual connection
         x = x + self.sa(self.layernorm1(x))     # apply self attention and layer normalisation
-        x = x + self.linear(self.layernorm2(x)) # apply linear layer and layer normalisation
-        return x + x_res                        # apply residual connection after layer normalisation
-    
+        x = x + self.ffwd(self.layernorm2(x)) # apply linear layer and layer normalisation
+        return x + xres                             # apply residual connection after layer normalisation
 class GPT(nn.Module):
 
     def __init__(self, vocab_size:int):
@@ -148,26 +109,28 @@ class GPT(nn.Module):
             init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx:torch.Tensor, targets:Optional[torch.Tensor]=None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        b, t, c = idx.shape
+        B, T,  = idx.shape
         token_embd = self.token_embd_table(idx)
-        pos_embd = self.position_embd_table(torch.arange(t, device=device))
+        pos_embd = self.position_embd_table(torch.arange(T, device=device))
         x = token_embd + pos_embd
         x = self.blocks(x)
         x = self.layernormf(x)
         logits = self.lm_head(x)
 
         if targets is not None:
-            b, t, c = logits.shape
-            logits = logits.view(b*t, c)
-            targets = targets.view(b*t)
+            B, T, C = logits.shape
+            logits = logits.view(B*T, C)
+            targets = targets.view(B*T)
             criterion = nn.CrossEntropyLoss()
             loss = criterion(logits, targets)
-        return logits, loss
+            return logits, loss
+        else: 
+            return logits
     
     def generate(self, idx:torch.Tensor, max_new_tokens:int) -> torch.Tensor:
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -block_size:]
-            logits, _ = self(idx_cond)
+            logits = self(idx_cond)
             logits = logits[:, -1, :]
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
