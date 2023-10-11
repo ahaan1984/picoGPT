@@ -5,15 +5,15 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 # hyperparameters
-batch_size:int = 16 
-block_size:int = 32 
+batch_size:int = 32
+block_size:int = 64
 max_iters:int = 5000
 eval_interval:int = 100
-learning_rate:int = 1e-3
+learning_rate:int = 3e-4
 device:str = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters:int = 200
-n_embd:int = 64
-n_head:int = 4
+n_embd:int = 204
+n_head:int = 6
 n_layer:int = 4
 dropout:int = 0.0
 
